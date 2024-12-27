@@ -1,8 +1,11 @@
 ﻿using System;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Reflection;
 using BizHawk.Client.Common;
 using BizHawk.Client.EmuHawk;
+using BizHawk.Emulation.Common;
+using BizHawk.Emulation.Cores.Consoles.Nintendo.NDS;
 
 namespace FindLuigi;
 
@@ -14,6 +17,7 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
     protected override string WindowTitleStatic => "Find Luigi";
     [OptionalApi] public IJoypadApi? JoypadApi { get; set; }
     [OptionalApi] public IGuiApi? GuiApi { get; set; }
+    [OptionalService] private IEmulator? Emulator { get; set; }
 
     private readonly Bitmap? LookupBitmap;
     private int _lastLookingFor = -1;
@@ -56,19 +60,22 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
     {
         if (!enabled.Checked) return;
 
-        if (GuiApi != null)
-        {
-            GuiApi.WithSurface(
-                DisplaySurfaceID.Client,
-                () =>
+        GuiApi?.WithSurface(
+            DisplaySurfaceID.Client,
+            () =>
+            {
+                GuiApi.ClearGraphics();
+                if (lastY > 0 && lastX > 0)
                 {
-                    GuiApi.ClearGraphics();
-                    if (lastY > 0 && lastX > 0)
-                    {
-                        GuiApi.DrawBox(lastX - 25, lastY - 25, lastX + 25, lastY + 25, Color.Aqua);
-                    }
+                    GuiApi.DrawBox(lastX - 20, lastY - 20, lastX + 20, lastY + 20, Color.Aqua);
                 }
-            );
+            }
+        );
+
+        if (Emulator is not NDS nds)
+        {
+            lookingFor.Text = $@"Expected NDS, but Emulator was {Emulator?.GetType().Name ?? "null"}";
+            return;
         }
 
         if (JoypadApi == null || LookupBitmap == null) return;
@@ -91,22 +98,18 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
             return;
         }
 
-        using var screenshot = MainForm.MakeScreenshotImage();
-        if (screenshot == null)
+        var videoBuffer = nds.GetVideoBuffer();
+        var width = nds.BufferWidth;
+        var height = nds.BufferHeight;
+
+        if (width != 256 || height != 192 * 2)
         {
-            lookingFor.Text = @"Failed to get screenshot";
+            lookingFor.Text = $@"Screenshot had size {width}, {height}";
             lastX = -1;
             return;
         }
 
-        if (screenshot.Width != 256 || screenshot.Height != 192 * 2)
-        {
-            lookingFor.Text = $@"Screenshot had size {screenshot.Width}, {screenshot.Height}";
-            lastX = -1;
-            return;
-        }
-
-        var facePixel = screenshot.GetPixel(screenshot.Width / 2, screenshot.Height / 4 - 16) & 0x00FFFFFF;
+        var facePixel = videoBuffer[(height / 4 - 16) * width + width / 2] & 0x00FFFFFF;
 
         var lookFor = facePixel switch
         {
@@ -129,8 +132,6 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
 
         var lookForColor = (byte)(lookFor * 255 / 4);
 
-        var data = screenshot.Pixels!;
-
         var sumX = 0f;
         var sumY = 0f;
         var totalFound = 0;
@@ -139,10 +140,10 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
         {
             for (var x = 0; x < 256 - 1; x++)
             {
-                var core = Convert(data[y * 256 + x]);
-                var right = Convert(data[y * 256 + x + 1]);
-                var down = Convert(data[(y + 1) * 256 + x]);
-                var diag = Convert(data[(y + 1) * 256 + x + 1]);
+                var core = Convert(videoBuffer[y * 256 + x]);
+                var right = Convert(videoBuffer[y * 256 + x + 1]);
+                var down = Convert(videoBuffer[(y + 1) * 256 + x]);
+                var diag = Convert(videoBuffer[(y + 1) * 256 + x + 1]);
 
                 if (core is 0 or >= 64 || right is 0 or >= 64 || down is 0 or >= 64 || diag is 0 or >= 64) continue;
 
@@ -208,8 +209,9 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
             }
         }
 
-        tapX += Math.Sign(deltaX) * 5;
-        tapY += Math.Sign(deltaY) * 5;
+        var dist = deltaX == 0 && deltaY == 0 ? 0 : Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+        tapX += (int)(deltaX * 5f / dist);
+        tapY += (int)(deltaY * 5f / dist);
 
         lastX = tapX;
         lastY = tapY;
