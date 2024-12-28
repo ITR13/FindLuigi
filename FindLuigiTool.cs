@@ -13,11 +13,13 @@ namespace FindLuigi;
 public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
 {
     private const int TappingInterval = 32;
-
+    private const string MemoryCallbackScope = "ARM9 System Bus";
     protected override string WindowTitleStatic => "Find Luigi";
     [OptionalApi] public IJoypadApi? JoypadApi { get; set; }
     [OptionalApi] public IGuiApi? GuiApi { get; set; }
     [OptionalService] private IEmulator? Emulator { get; set; }
+
+    [OptionalApi] private IMemoryApi? Memory { get; set; }
 
     private readonly Bitmap? LookupBitmap;
     private int _lastLookingFor = -1;
@@ -36,8 +38,7 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
         using var stream = assembly.GetManifestResourceStream("FindLuigi.lookup.png");
         if (stream == null)
         {
-            lookingFor.Text = @"Failed to load bitmap: " + assembly.GetManifestResourceNames()[1];
-
+            lookingFor.Text = @"Failed to load bitmap";
             return;
         }
 
@@ -49,12 +50,19 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
 
     private void checkBox1_CheckedChanged(object sender, EventArgs e)
     {
+        lastX = -1;
+        lastY = -1;
+
+        GuiApi?.WithSurface(
+            DisplaySurfaceID.Client,
+            () => { GuiApi.ClearGraphics(); }
+        );
+        
         if (JoypadApi == null) return;
         JoypadApi.SetAnalog("Touch Y");
         JoypadApi.SetAnalog("Touch X");
         JoypadApi.Set("Touch");
     }
-
 
     protected override void UpdateAfter()
     {
@@ -120,6 +128,13 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
             _ => 0
         };
 
+        // If the time is 0 then we're at game over. It's a float 16.16, but ReadFloat doesn't read it correctly
+        if (lookFor != 0 && Memory?.ReadU32(0x17B98C, "Main RAM") <= 0)
+        {
+            // Looking for Yoshi coincidentally clicks exactly on the buttons needed to restart the game
+            lookFor = 2;
+        }
+
 
         if (lookFor != _lastLookingFor)
         {
@@ -184,7 +199,7 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
 
         lastX = tapX;
         lastY = tapY;
-        if (foundFor < 5) return;
+        if (foundFor < 5 || lastX < 0 || lastY < 0) return;
 
         if (unmoovedFor < 30)
         {
@@ -209,7 +224,7 @@ public sealed partial class FindLuigiTool : ToolFormBase, IExternalToolForm
             }
         }
 
-        var dist = deltaX == 0 && deltaY == 0 ? 0 : Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+        var dist = deltaX == 0 && deltaY == 0 ? 1 : Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
         tapX += (int)(deltaX * 5f / dist);
         tapY += (int)(deltaY * 5f / dist);
 
